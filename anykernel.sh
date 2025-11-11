@@ -4,7 +4,7 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=Spacewar KernelSU kernel by sliva_ru
+kernel.string=KernelSU kernel by sliva
 do.devicecheck=0
 do.modules=0
 do.systemless=0
