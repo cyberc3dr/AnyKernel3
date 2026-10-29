@@ -244,8 +244,22 @@ restore_env() {
   done;
   umount -l /dev/random) 2>/dev/null;
 }
+bb_diag() {
+  # print everything needed to tell why busybox can't be set up
+  ui_print " " "--- busybox diagnostics ---";
+  ui_print "uname: $(uname -m) / $(uname -r)";
+  ui_print "abilist: $(getprop ro.product.cpu.abilist 2>/dev/null)";
+  ui_print "AKHOME: $AKHOME";
+  ui_print "busybox: $(ls -l $AKHOME/tools/busybox 2>&1)";
+  ui_print "bin entries: $(ls $AKHOME/bin 2>/dev/null | wc -l)";
+  ui_print "mount: $(grep " $(df $AKHOME 2>/dev/null | tail -n1 | awk '{ print $NF }') " /proc/mounts 2>/dev/null | head -n1 | cut -d' ' -f1-4)";
+  ui_print "exe link: $(readlink /proc/self/exe 2>&1)";
+  ui_print "selinux: $(cat /proc/self/attr/current 2>&1)";
+  ui_print "exec test: $($AKHOME/tools/busybox true 2>&1; echo rc=$?)";
+  ui_print "--------------------------" " ";
+}
 setup_bb() {
-  local arch32 bb;
+  local arch32 bb bbrc cand applet;
   for arch32 in x86 arm; do
     if [ -d $AKHOME/tools/$arch32 ]; then
       bb=$AKHOME/tools/$arch32/busybox;
@@ -257,10 +271,53 @@ setup_bb() {
       fi;
     fi;
   done;
+  mkdir -p $AKHOME/bin;
   bb=$AKHOME/tools/busybox;
   chmod 755 $bb;
-  $bb chmod -R 755 tools bin;
-  $bb --install -s bin;
+  chmod 755 $AKHOME/tools/* 2>/dev/null;
+  $bb ash -c 'exit 0' >/dev/null 2>&1;
+  bbrc=$?;
+  if [ $bbrc != 0 ]; then
+    # bundled busybox can't run here, try an installed one
+    for cand in /data/adb/ksu/bin/busybox /data/adb/ap/bin/busybox /data/adb/magisk/busybox /system/bin/busybox /system/xbin/busybox /vendor/bin/busybox /sbin/busybox $(which busybox 2>/dev/null); do
+      if [ -x "$cand" ] && "$cand" ash -c 'exit 0' >/dev/null 2>&1; then
+        ui_print "Bundled busybox failed (status $bbrc), using $cand";
+        bb=$cand;
+        break;
+      fi;
+    done;
+  fi;
+  if ! $bb ash -c 'exit 0' >/dev/null 2>&1; then
+    ui_print "No usable busybox found (bundled status $bbrc).";
+    bb_diag;
+    return 1;
+  fi;
+  $bb --install -s $AKHOME/bin >/dev/null 2>&1;
+  if [ $? != 0 ] || [ -z "$($bb ls $AKHOME/bin 2>/dev/null)" ]; then
+    # --install -s returns 1 when it can't readlink /proc/self/exe; link applets by hand
+    echo "busybox --install failed, linking applets manually..." >&2;
+    for applet in $($bb --list 2>/dev/null); do
+      [ -e "$AKHOME/bin/$applet" -o -L "$AKHOME/bin/$applet" ] || $bb ln -s "$bb" "$AKHOME/bin/$applet";
+    done;
+  fi;
+  if [ -z "$($bb ls $AKHOME/bin 2>/dev/null)" ]; then
+    # symlinks impossible here: fall back to tiny wrapper scripts
+    echo "symlinks failed, writing wrapper scripts..." >&2;
+    for applet in $($bb --list 2>/dev/null); do
+      printf '#!/system/bin/sh\nexec "%s" %s "$@"\n' "$bb" "$applet" > $AKHOME/bin/$applet;
+      chmod 755 $AKHOME/bin/$applet;
+    done;
+  fi;
+  if [ "$bb" != "$AKHOME/tools/busybox" ]; then
+    rm -f $AKHOME/tools/busybox;
+    $bb ln -s "$bb" $AKHOME/tools/busybox;
+  fi;
+  if [ -z "$($bb ls $AKHOME/bin 2>/dev/null)" ]; then
+    ui_print "Could not create busybox applets in $AKHOME/bin.";
+    bb_diag;
+    return 1;
+  fi;
+  return 0;
 }
 debugging() {
   local debug log path;
